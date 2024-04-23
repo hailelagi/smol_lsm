@@ -37,8 +37,17 @@ pub(crate) fn map_bound(bound: Bound<&[u8]>) -> Bound<Bytes> {
 
 impl MemTable {
     /// Create a new mem-table.
-    pub fn create(_id: usize) -> Self {
-        unimplemented!()
+    pub fn create(id: usize) -> Self {
+        let map = Arc::new(SkipMap::new());
+        let wal = None;
+        let approximate_size = Arc::new(AtomicUsize::new(map.len()));
+
+        Self {
+            id,
+            map,
+            wal,
+            approximate_size,
+        }
     }
 
     /// Create a new mem-table with WAL
@@ -68,16 +77,35 @@ impl MemTable {
     }
 
     /// Get a value by key.
-    pub fn get(&self, _key: &[u8]) -> Option<Bytes> {
-        unimplemented!()
+    pub fn get(&self, key: &[u8]) -> Option<Bytes> {
+        let map = &self.map;
+
+        match map.get(key) {
+            Some(entry) => Some(entry.value().to_owned()),
+            None => None,
+        }
     }
 
     /// Put a key-value pair into the mem-table.
     ///
     /// In week 1, day 1, simply put the key-value pair into the skipmap.
     /// In week 2, day 6, also flush the data to WAL.
-    pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
-        unimplemented!()
+    pub fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
+        let estimate = key.len() + value.len();
+
+        /*
+        naive
+                self.map
+                    .insert(key.to_owned().into(), value.to_owned().into());
+        */
+
+        self.map
+            .insert(Bytes::copy_from_slice(key), Bytes::copy_from_slice(value));
+
+        self.approximate_size
+            .fetch_add(estimate, std::sync::atomic::Ordering::Relaxed);
+
+        Ok(())
     }
 
     pub fn sync_wal(&self) -> Result<()> {
