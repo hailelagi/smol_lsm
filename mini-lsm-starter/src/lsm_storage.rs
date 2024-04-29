@@ -6,8 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
-use anyhow::{Error, Result};
-use arc_swap::Guard;
+use anyhow::{Ok, Result};
 use bytes::Bytes;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 
@@ -286,18 +285,31 @@ impl LsmStorageInner {
         };
 
         // check the memtable first
-        match memtable.get(key) {
-            Some(value) => {
-                if value.is_empty() {
-                    Ok(None)
-                } else {
-                    Ok(Some(value))
-                }
+        if let Some(value) = memtable.get(key) {
+            if value.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(value))
             }
-            None => Ok(None),
-        }
+        } else {
+            let lsm_state = {
+                let guard = self.state.read();
+                Arc::clone(&guard)
+            };
 
-        // check the SST next
+            let found = lsm_state.imm_memtables.iter().find_map(|m| m.get(key));
+
+            match found {
+                Some(value) => {
+                    if value.is_empty() {
+                        Ok(None)
+                    } else {
+                        Ok(Some(value))
+                    }
+                }
+                None => Ok(None),
+            }
+        }
     }
 
     /// Write a batch of data into the storage. Implement in week 2 day 7.
@@ -307,29 +319,40 @@ impl LsmStorageInner {
 
     /// Put a key-value pair into the storage by writing into the current memtable.
     pub fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
-        let guard = self.state.read();
-        let memtable = Arc::clone(&guard.memtable);
+        let memtable = {
+            let guard = self.state.read();
+            guard.memtable.clone()
+        };
 
-        let data_size = key.len() + value.len();
-        let total = memtable.approximate_size() + data_size;
-
+        let total = memtable.approximate_size() + key.len() + value.len();
+        memtable.put(key, value)?;
 
         if total > self.options.target_sst_size {
-            memtable.put(key, value)?;
             let state_lock = self.state_lock.lock();
 
-            self.force_freeze_memtable(&state_lock)
-        } else {
-            memtable.put(key, value)
+            self.force_freeze_memtable(&state_lock)?
         }
+
+        Ok(())
     }
 
     /// Remove a key from the storage by writing an empty value.
     pub fn delete(&self, key: &[u8]) -> Result<()> {
-        let guard = self.state.read();
-        let memtable = Arc::clone(&guard.memtable);
+        let memtable = {
+            let guard = self.state.read();
+            guard.memtable.clone()
+        };
 
-        memtable.put(key, &[])
+        let total = memtable.approximate_size() + key.len();
+
+        if total > self.options.target_sst_size {
+            let state_lock = self.state_lock.lock();
+            memtable.put(key, b"")?;
+
+            self.force_freeze_memtable(&state_lock)
+        } else {
+            memtable.put(key, b"")
+        }
     }
 
     pub(crate) fn path_of_sst_static(path: impl AsRef<Path>, id: usize) -> PathBuf {
@@ -353,8 +376,23 @@ impl LsmStorageInner {
     }
 
     /// Force freeze the current memtable to an immutable memtable
-    pub fn force_freeze_memtable(&self, state_lock_observer: &MutexGuard<'_, ()>) -> Result<()> {
-        let guard = state_lock_observer;
+    pub fn force_freeze_memtable(&self, _state_lock_observer: &MutexGuard<'_, ()>) -> Result<()> {
+        let new_mem = Arc::new(MemTable::create(self.next_sst_id()));
+        let mut guard = self.state.write();
+
+        let mut current_state = guard.as_ref().clone();
+        let old_memtable = std::mem::replace(&mut current_state.memtable, new_mem);
+
+        // Add the memtable to the immutable memtables.
+        current_state.imm_memtables.insert(0, old_memtable.clone());
+
+        // Update the snapshot.
+        *guard = Arc::new(current_state);
+
+        drop(guard);
+
+        //old_memtable.sync_wal()?;
+
         Ok(())
     }
 

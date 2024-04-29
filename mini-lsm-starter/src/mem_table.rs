@@ -78,12 +78,7 @@ impl MemTable {
 
     /// Get a value by key.
     pub fn get(&self, key: &[u8]) -> Option<Bytes> {
-        let map = &self.map;
-
-        match map.get(key) {
-            Some(entry) => Some(entry.value().to_owned()),
-            None => None,
-        }
+        self.map.get(key).map(|entry| entry.value().to_owned())
     }
 
     /// Put a key-value pair into the mem-table.
@@ -93,15 +88,8 @@ impl MemTable {
     pub fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
         let estimate = key.len() + value.len();
 
-        /*
-        naive
-                self.map
-                    .insert(key.to_owned().into(), value.to_owned().into());
-        */
-
         self.map
-            .insert(Bytes::copy_from_slice(key), Bytes::copy_from_slice(value));
-
+            .insert(key.to_owned().into(), value.to_owned().into());
         self.approximate_size
             .fetch_add(estimate, std::sync::atomic::Ordering::Relaxed);
 
