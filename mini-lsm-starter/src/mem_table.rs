@@ -103,6 +103,12 @@ impl MemTable {
         Ok(())
     }
 
+    /*
+    You will need to first create iterators on a single memtable,
+     then create a merge iterator on all memtables, and finally 
+     implement the range limit for the iterators.
+     */
+    
     /// Get an iterator over a range of keys.
     pub fn scan(&self, _lower: Bound<&[u8]>, _upper: Bound<&[u8]>) -> MemTableIterator {
         unimplemented!()
